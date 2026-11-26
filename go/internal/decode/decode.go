@@ -31,6 +31,28 @@ type Primer interface {
 	Keepalive() ([]byte, time.Duration)
 }
 
+// GATTWrite is one write to a named GATT characteristic.
+type GATTWrite struct {
+	Char string
+	Data []byte
+}
+
+// GATTPrimer is implemented by decoders whose device must be asked for data
+// through a standard control point after connecting (a glucose meter's RACP).
+// The session pump performs these writes when the link supports them.
+type GATTPrimer interface {
+	OnOpenGATT() []GATTWrite
+}
+
+// IdleFlusher is implemented by decoders for devices that send a measurement
+// as a burst with no terminator, so the only end-of-frame signal is silence.
+// The session pump calls Idle once the link has been quiet for IdleGap after
+// at least one frame; the decoder parses whatever it has buffered.
+type IdleFlusher interface {
+	IdleGap() time.Duration
+	Idle(at time.Time) []model.Reading
+}
+
 // Profile describes a decoder to the UI.
 type Profile struct {
 	ID         string           `json:"id"`
@@ -39,6 +61,8 @@ type Profile struct {
 	Transports []transport.Kind `json:"transports"`
 	// DefaultBaud is offered in the UI for byte-stream transports.
 	DefaultBaud int `json:"defaultBaud,omitempty"`
+	// Line is the serial framing the device model needs, when not 8N1.
+	Line *transport.LineSettings `json:"line,omitempty"`
 }
 
 type registration struct {
@@ -59,6 +83,12 @@ func New(id string) (Decoder, error) {
 		return nil, fmt.Errorf("unknown decoder profile %q", id)
 	}
 	return r.New(), nil
+}
+
+// Lookup returns the profile registered under id.
+func Lookup(id string) (Profile, bool) {
+	r, ok := registry[id]
+	return r.Profile, ok
 }
 
 // Profiles lists registered profiles, sorted for a stable UI order.

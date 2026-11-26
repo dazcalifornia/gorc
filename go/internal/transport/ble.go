@@ -184,12 +184,32 @@ func describeBLE(addr, name string, rssi int16, services []string) DeviceInfo {
 	// from a pair of headphones without decoding UUIDs by eye.
 	var labels []string
 	suggested := ""
+	vendorFFE0, glucose := false, false
 	for _, u := range services {
 		if short, ok := btsig.ShortUUID(u); ok {
 			if label, found := btsig.HealthServices[short]; found {
 				labels = append(labels, label)
 				suggested = "ble-gatt"
 			}
+			vendorFFE0 = vendorFFE0 || short == btsig.SvcVendorFFE0
+			glucose = glucose || short == btsig.SvcGlucose
+		}
+	}
+	// A glucose meter only answers when asked through its RACP, and a Mi scale
+	// uses the Body Composition UUID with its own layout; both need their own
+	// decoder rather than the generic one.
+	if glucose {
+		suggested = "ble-glucose"
+	}
+	if looksMiScale(name) {
+		suggested = "scale-mi-ble"
+	}
+	// A standard health service wins; FFE0 alone most likely means the
+	// Yuwell oximeter the OPD kiosk uses, so offer that decoder.
+	if vendorFFE0 {
+		labels = append(labels, "Vendor FFE0 (Yuwell SpO₂?)")
+		if suggested == "" {
+			suggested = "spo2-yuwell-ble"
 		}
 	}
 	if len(labels) > 0 {
@@ -206,6 +226,14 @@ func describeBLE(addr, name string, rssi int16, services []string) DeviceInfo {
 		Services:         services,
 		SuggestedProfile: suggested,
 	}
+}
+
+// looksMiScale matches the advertised names of Xiaomi body-composition scales
+// ("MIBFS", "MI SCALE2", "MI_SCALE"). The OPD code matched by MAC address,
+// so these names are not from it.
+func looksMiScale(name string) bool {
+	n := strings.ToUpper(strings.ReplaceAll(name, "_", " "))
+	return strings.HasPrefix(n, "MIBFS") || strings.HasPrefix(n, "MI SCALE")
 }
 
 func (b *BLE) Open(ctx context.Context, dev DeviceInfo, opts OpenOptions) (Conn, error) {
@@ -389,6 +417,33 @@ func (c *bleConn) Write(p []byte) error {
 		return errors.New("device exposes no writable vendor characteristic")
 	}
 	return fmt.Errorf("no vendor characteristic accepted the write: %w", lastErr)
+}
+
+// WriteChar writes to the characteristic with the given UUID (128-bit or
+// 4-digit short form). Control points such as the glucose RACP require a
+// write with response, so that is tried first.
+func (c *bleConn) WriteChar(uuid string, p []byte) error {
+	select {
+	case <-c.done:
+		return errors.New("connection closed")
+	default:
+	}
+	want, wantShort := strings.ToLower(uuid), uint16(0)
+	if s, ok := btsig.ShortUUID(uuid); ok {
+		wantShort = s
+	}
+	for _, ch := range c.chars {
+		got := ch.UUID().String()
+		if s, ok := btsig.ShortUUID(got); !(strings.EqualFold(got, want) || (ok && wantShort != 0 && s == wantShort)) {
+			continue
+		}
+		if _, err := ch.Write(p); err == nil {
+			return nil
+		}
+		_, err := ch.WriteWithoutResponse(p)
+		return err
+	}
+	return fmt.Errorf("device has no characteristic %s", uuid)
 }
 
 // Dropped reports notifications discarded because the consumer fell behind.

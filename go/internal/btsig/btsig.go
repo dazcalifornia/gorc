@@ -13,8 +13,14 @@ const (
 	SvcThermometer     uint16 = 0x1809
 	SvcBloodPressure   uint16 = 0x1810
 	SvcHeartRate       uint16 = 0x180D
+	SvcGlucose         uint16 = 0x1808
 	SvcBattery         uint16 = 0x180F
 	SvcDeviceInfo      uint16 = 0x180A
+
+	// SvcVendorFFE0 is not SIG-assigned: it is the generic serial-over-BLE
+	// service many Chinese modules ship with, and what Yuwell oximeters (and
+	// HTD thermometers) use. Seeing it is a hint, not an identification.
+	SvcVendorFFE0 uint16 = 0xFFE0
 )
 
 // HealthServices maps the services that make a BLE device a medical-device
@@ -27,6 +33,7 @@ var HealthServices = map[uint16]string{
 	SvcThermometer:     "Health Thermometer",
 	SvcBloodPressure:   "Blood Pressure",
 	SvcHeartRate:       "Heart Rate",
+	SvcGlucose:         "Glucose",
 }
 
 // ShortUUID extracts the 16-bit assigned number from a Bluetooth base UUID,

@@ -1,6 +1,6 @@
 // Mirrors the JSON emitted by the Go backend (internal/manager, internal/transport).
 
-export type TransportKind = 'sim' | 'serial' | 'ble' | 'bt-classic'
+export type TransportKind = 'sim' | 'serial' | 'ble' | 'bt-classic' | 'usb-hid' | 'hl7'
 
 export type Quality = 'ok' | 'searching' | 'artifact' | 'no_sensor'
 

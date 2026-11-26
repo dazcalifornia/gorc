@@ -52,8 +52,44 @@ make run         # http://localhost:8080
 | Decoder profile | Devices | Transport |
 | --- | --- | --- |
 | `spo2-bci` | Contec CMS50D+/E/F, Berry BM1000C, Jumper JPD-500 and other BCI-protocol fingertip oximeters | serial, SPP |
-| `ascii-lines` | A&D, CAS, Mettler, Seca, Charder weight/height columns; anything printing `WT:70.5 HT:170` | serial, SPP |
+| `ascii-lines` | A&D, CAS, Mettler, Seca, Charder weight/height columns; anything printing `WT:70.5 HT:170`; OPD kiosk scales (`W:067.9H:180.0T:36.5`, Adam, SC Stand, TANITA PW-630U) | serial, SPP |
 | `ble-gatt` | Any Bluetooth SIG device: Pulse Oximeter `0x1822`, Weight Scale `0x181D`, Body Composition `0x181B`, Health Thermometer `0x1809`, Blood Pressure `0x1810`, Heart Rate `0x180D` | BLE |
+| `bp-omron-hbp9010` · `bp-omron-9030` · `bp-omron-9020` | Omron HBP-9010 / USB, HBP-9030, HBP-9020 (CSV) | serial, SPP |
+| `bp-accuniq` · `bp-terumo-bp500` | Accuniq, Terumo BP500 (CSV; BP500 is polled every 5 s) | serial, SPP |
+| `bp-and-2655` | A&D TM-2655 / -RTS / TM-2657P, Terumo 2655 (0x1E records) | serial, SPP |
+| `bp-bio` · `bp-contec-hl7` · `bp-hingmed` · `bp-jawon` · `bp-kenz` · `bp-raycome` · `bp-sy-g100` · `bp-yuwell` | BIO320/750, CONTEC (HL7), Hingmed, Jawon, Kenz, Raycome RBP-7000, SY-G100, Yuwell USB | serial, SPP |
+| `thermo-serial` | Serial thermometers: binary `FE FD 1A 01 hi lo 0D 0A` or `T body = 36.29 C` text | serial, SPP |
+| `spo2-kscm01` | HealForce kscm01 pulse-oximeter module (`AA 55` frames) | serial, SPP |
+| `spo2-yuwell-ble` | Yuwell BLE fingertip oximeters (vendor service `FFE0`, notify `FFE4`/`FFE1`; pulse byte 4, SpO₂ byte 5). Suggested automatically for devices advertising `FFE0` | BLE |
+| `ble-glucose` | SIG glucose meters such as Roche Accu-Chek; writes "report last record" to the RACP `0x2A52` on connect. Pair (and enter any PIN) in the OS first | BLE |
+| `scale-mi-ble` | Xiaomi Mi body-composition scales (`0x2A9C` in Xiaomi's own layout, weight at bytes 11–12 ÷ 200) | BLE |
+| `thermo-htd-ble` | HTD infrared thermometer guns (ASCII on `FFE1`) | BLE |
+| `thermo-hid-0c45` | The OPD kiosk's USB thermometer, VID `0C45` PID `7702` (two-report reading, polled every 500 ms) | USB HID (Windows) |
+| `hl7-obx` | Bedside monitors pushing HL7 ORU: OBX-3 MDC names (`MDC_PULS_OXIM_SAT_O2`, `MDC_PRESS_BLD_NONINV_SYS`, …) or short codes (`SpO2`, `NIBP_SYS`, `HR`, `RR`, `T1`, …) | HL7 over TCP |
+
+Two transports exist for these OPD devices:
+
+- **USB HID** (Windows only) lists vendor HID interfaces the process can open;
+  keyboards and mice are held by Windows and drop out. It talks to `hid.dll`
+  directly, so no cgo or hidapi is needed.
+- **HL7 monitor (TCP)** listens on `-hl7` (default `:1901`, the OPD port)
+  only while a session is open on it; the monitor is the TCP client. Messages
+  are framed by MLLP when the monitor uses it, otherwise by 100 ms of silence.
+  Each message is acknowledged: `-hl7-ack standard` (default, MLLP, echoes the
+  control id), `legacy` (the OPD's fixed string) or `none`. Like the OPD, all
+  monitors on one session feed one card, so use one monitor per session.
+
+The `thermo-hid-0c45` decoder follows `GenericHid.dll`'s IL, since the OPD has
+no source for it. The OPD's positional HL7 parsers (forms HM and KPHIS) are not
+ported: they disagree on what OBX index 7 means and only fit one site's monitor.
+
+The `bp-*`, `thermo-serial` and `spo2-kscm01` profiles are ported from the
+SMART EASY OPD kiosk's serial drivers (its `docs/Core/01-Serial-COM-HID.md`),
+including each model's line settings (odd parity for Omron 9020, 8N2 for Kenz
+and Terumo BP500). Models that send a result with no terminator are framed by
+a quiet gap on the line instead of a fixed sleep. The OPD code had no sample
+frame for Accuniq, A&D, Terumo, Omron 9020, Hingmed, CONTEC, SY-G100, Kenz,
+BIO or Jawon, so those layouts are as documented but untested on hardware.
 
 Readings are normalised before they leave the backend — `spo2`, `pulse_rate`,
 `weight`, `height`, `bmi`, `body_fat`, `temperature`, `bp_systolic`, … — with

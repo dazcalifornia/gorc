@@ -26,6 +26,8 @@ func main() {
 	addr := flag.String("addr", ":8080", "listen address")
 	origins := flag.String("cors", "http://localhost:5173,http://127.0.0.1:5173", "comma-separated allowed origins for the Vite dev server")
 	static := flag.String("static", "", "optional directory of built frontend assets to serve at /")
+	hl7Addr := flag.String("hl7", ":1901", "address the HL7 transport listens on for bedside monitors while a session is open (empty disables)")
+	hl7Ack := flag.String("hl7-ack", transport.HL7AckStandard, "HL7 ACK style: standard (MLLP, echoes the control id), legacy (the OPD kiosk's fixed string) or none")
 	flag.Parse()
 
 	h := hub.New()
@@ -34,6 +36,8 @@ func main() {
 		transport.NewSerial(),
 		transport.NewBLE(),
 		transport.NewBTClassic(),
+		transport.NewUSBHID(),
+		transport.NewHL7(*hl7Addr, *hl7Ack),
 	)
 
 	app := fiber.New(fiber.Config{

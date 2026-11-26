@@ -54,6 +54,16 @@ type Frame struct {
 type OpenOptions struct {
 	BaudRate int    `json:"baudRate,omitempty"`
 	Profile  string `json:"profile,omitempty"`
+	// Line overrides the 8N1 framing of a byte-stream link. Decoder profiles
+	// supply it, since it is a property of the device model, not the port.
+	Line *LineSettings `json:"line,omitempty"`
+}
+
+// LineSettings is the serial character framing a device model insists on.
+// Data bits are always 8; no device we decode uses anything else.
+type LineSettings struct {
+	Parity   string `json:"parity,omitempty"`   // "none" (default), "odd", "even"
+	StopBits int    `json:"stopBits,omitempty"` // 1 (default) or 2
 }
 
 // Conn is a live link to one device.
@@ -66,6 +76,14 @@ type Conn interface {
 	Write(p []byte) error
 	Err() error
 	Close() error
+}
+
+// CharWriter is implemented by GATT links that can write to one named
+// characteristic. Conn.Write guesses a vendor characteristic, which is right
+// for wake-up commands but wrong for a standard control point such as the
+// glucose Record Access Control Point (0x2A52).
+type CharWriter interface {
+	WriteChar(uuid string, p []byte) error
 }
 
 // Transport discovers and opens devices of one Kind.

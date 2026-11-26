@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand/v2"
+	"strings"
 	"sync"
 	"time"
 )
@@ -38,6 +39,9 @@ type simDevice struct {
 	note    string
 	// run generates traffic until ctx is cancelled.
 	run func(ctx context.Context, emit func(Frame))
+	// onCharWrite, when set, answers a GATT characteristic write the way the
+	// real device would (a glucose meter replying to its RACP).
+	onCharWrite func(uuid string, p []byte, emit func(Frame))
 }
 
 func simDevices() []simDevice {
@@ -61,6 +65,17 @@ func simDevices() []simDevice {
 			id: "ble-oximeter", name: "Simulated BLE pulse oximeter", profile: "ble-gatt",
 			note: "PLX Continuous Measurement (0x2A5F) at 1 Hz with perfusion index, plus battery level",
 			run:  runSimBLEOximeter,
+		},
+		{
+			id: "yuwell-spo2", name: "Simulated Yuwell BLE pulse oximeter", profile: "spo2-yuwell-ble",
+			note: "Vendor FFE4 notifications at 1 Hz, pulse at byte 4 and SpO2 at byte 5; the other bytes are zero because their meaning is unknown",
+			run:  runSimYuwellSpO2,
+		},
+		{
+			id: "ble-glucose", name: "Simulated BLE glucose meter", profile: "ble-glucose",
+			note:        "Glucose Measurement (0x2A18) records, sent only when asked through the RACP (0x2A52), like an Accu-Chek",
+			run:         func(ctx context.Context, _ func(Frame)) { <-ctx.Done() },
+			onCharWrite: simGlucoseRACP,
 		},
 		{
 			id: "ble-vitals", name: "Simulated BLE thermometer + blood pressure", profile: "ble-gatt",
@@ -91,7 +106,7 @@ func (s *Sim) Open(ctx context.Context, dev DeviceInfo, opts OpenOptions) (Conn,
 			continue
 		}
 		runCtx, cancel := context.WithCancel(context.Background())
-		c := &simConn{dev: dev, frames: make(chan Frame, 256), cancel: cancel}
+		c := &simConn{dev: dev, frames: make(chan Frame, 256), cancel: cancel, onCharWrite: d.onCharWrite}
 		go func() {
 			defer close(c.frames)
 			d.run(runCtx, c.emit)
@@ -106,8 +121,25 @@ type simConn struct {
 	frames chan Frame
 	cancel context.CancelFunc
 
+	onCharWrite func(uuid string, p []byte, emit func(Frame))
+
 	mu     sync.Mutex
 	closed bool
+}
+
+// WriteChar lets a simulated GATT device react to a control-point write.
+func (c *simConn) WriteChar(uuid string, p []byte) error {
+	c.mu.Lock()
+	closed := c.closed
+	c.mu.Unlock()
+	if closed {
+		return errors.New("connection closed")
+	}
+	if c.onCharWrite == nil {
+		return fmt.Errorf("simulated device has no characteristic %s", uuid)
+	}
+	c.onCharWrite(uuid, append([]byte(nil), p...), c.emit)
+	return nil
 }
 
 func (c *simConn) Device() DeviceInfo   { return c.dev }
@@ -320,6 +352,55 @@ func runSimBLEOximeter(ctx context.Context, emit func(Frame)) {
 		case <-tick.C:
 		}
 	}
+}
+
+// runSimYuwellSpO2 emits the Yuwell vendor notification the OPD kiosk reads.
+// It opens with a few "no finger" packets (zeros) before values appear.
+func runSimYuwellSpO2(ctx context.Context, emit func(Frame)) {
+	tick := time.NewTicker(time.Second)
+	defer tick.Stop()
+
+	spo2, pulse := 97.0, 74.0
+	for n := 0; ; n++ {
+		p := make([]byte, 6)
+		if n >= 3 {
+			spo2 = clamp(spo2+rand.NormFloat64()*0.4, 93, 100)
+			pulse = clamp(pulse+rand.NormFloat64()*2, 55, 95)
+			p[4], p[5] = byte(math.Round(pulse)), byte(math.Round(spo2))
+		}
+		emit(Frame{At: time.Now(), Source: "0000ffe4-0000-1000-8000-00805f9b34fb", Data: p})
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+	}
+}
+
+// simGlucoseRACP answers "report stored records" (opcode 1, operator 1 = all
+// or 6 = last) with one Glucose Measurement record per stored reading, then a
+// RACP "response code: success". Concentration is kg/L, as most meters send.
+func simGlucoseRACP(uuid string, p []byte, emit func(Frame)) {
+	if !strings.Contains(strings.ToLower(uuid), "2a52") || len(p) < 2 || p[0] != 0x01 {
+		return
+	}
+	stored := []float64{98, 112, 104} // mg/dL
+	if p[1] == 0x06 {
+		stored = stored[len(stored)-1:]
+	}
+	now := time.Now()
+	for i, mgdl := range stored {
+		// flags: bit1 concentration+type/location present (kg/L, bit2 clear).
+		rec := []byte{0x02}
+		rec = append(rec, u16le(uint16(i+1))...)
+		rec = append(rec, u16le(uint16(now.Year()))...)
+		rec = append(rec, byte(now.Month()), byte(now.Day()), byte(now.Hour()), byte(now.Minute()), byte(now.Second()))
+		rec = append(rec, sfloatBytes(mgdl/100000, -5)...) // 98 mg/dL = 0.00098 kg/L
+		rec = append(rec, 0x11)                            // capillary whole blood, finger
+		emit(Frame{At: time.Now(), Source: "00002a18-0000-1000-8000-00805f9b34fb", Data: rec})
+	}
+	emit(Frame{At: time.Now(), Source: "00002a52-0000-1000-8000-00805f9b34fb", Data: []byte{0x06, 0x00, 0x01, 0x01}})
 }
 
 // runSimBLEVitals emits thermometer and blood-pressure spot measurements.

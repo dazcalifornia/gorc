@@ -130,11 +130,18 @@ func (s *Serial) Open(ctx context.Context, dev DeviceInfo, opts OpenOptions) (Co
 		port = strings.Replace(port, "/dev/tty.", "/dev/cu.", 1)
 	}
 
+	parity, stop, err := lineMode(opts.Line)
+	if err != nil {
+		return nil, err
+	}
+	// InitialStatusBits stays nil, which asserts DTR and RTS. Devices that
+	// "need RTS before they send" (Omron 9030, Kenz, Jawon, SC Stand scales)
+	// therefore work without a per-profile switch.
 	p, err := serial.Open(port, &serial.Mode{
 		BaudRate: baud,
 		DataBits: 8,
-		Parity:   serial.NoParity,
-		StopBits: serial.OneStopBit,
+		Parity:   parity,
+		StopBits: stop,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("open %s at %d baud: %w", port, baud, err)
@@ -150,6 +157,33 @@ func (s *Serial) Open(ctx context.Context, dev DeviceInfo, opts OpenOptions) (Co
 	c := &serialConn{dev: dev, port: p, frames: make(chan Frame, 256), done: make(chan struct{})}
 	go c.pump()
 	return c, nil
+}
+
+// lineMode maps profile line settings onto the serial library, defaulting to
+// 8N1 when the profile does not say otherwise.
+func lineMode(l *LineSettings) (serial.Parity, serial.StopBits, error) {
+	if l == nil {
+		return serial.NoParity, serial.OneStopBit, nil
+	}
+	parity := serial.NoParity
+	switch strings.ToLower(l.Parity) {
+	case "", "none":
+	case "odd":
+		parity = serial.OddParity
+	case "even":
+		parity = serial.EvenParity
+	default:
+		return 0, 0, fmt.Errorf("unsupported parity %q", l.Parity)
+	}
+	stop := serial.OneStopBit
+	switch l.StopBits {
+	case 0, 1:
+	case 2:
+		stop = serial.TwoStopBits
+	default:
+		return 0, 0, fmt.Errorf("unsupported stop bits %d", l.StopBits)
+	}
+	return parity, stop, nil
 }
 
 type serialConn struct {

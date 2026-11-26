@@ -29,6 +29,13 @@ const (
 	MetricBPDiastolic Metric = "bp_diastolic"
 	MetricBPMean      Metric = "bp_mean"
 
+	// MetricHeartRate is the ECG-derived rate from a bedside monitor. It is
+	// kept apart from pulse_rate (oximeter or cuff) because a monitor sends
+	// both, and they differ in arrhythmia.
+	MetricHeartRate Metric = "heart_rate"
+
+	MetricGlucose Metric = "glucose"
+
 	MetricBattery Metric = "battery"
 )
 
@@ -91,6 +98,10 @@ func (m Metric) Display() string {
 		return "Diastolic"
 	case MetricBPMean:
 		return "Mean arterial"
+	case MetricHeartRate:
+		return "Heart rate (ECG)"
+	case MetricGlucose:
+		return "Glucose"
 	case MetricBattery:
 		return "Battery"
 	}

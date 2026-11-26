@@ -14,7 +14,7 @@ func init() {
 	register(Profile{
 		ID:         "ble-gatt",
 		Label:      "BLE — Bluetooth SIG health profiles",
-		Note:       "Standards-based BLE devices: Pulse Oximeter (0x1822), Weight Scale (0x181D), Body Composition (0x181B), Health Thermometer (0x1809), Blood Pressure (0x1810) and Heart Rate (0x180D). Decodes IEEE-11073 floats; no vendor code needed.",
+		Note:       "Standards-based BLE devices: Pulse Oximeter (0x1822), Weight Scale (0x181D), Body Composition (0x181B), Health Thermometer (0x1809), Blood Pressure (0x1810), Heart Rate (0x180D) and Glucose (0x1808) records. Decodes IEEE-11073 floats; no vendor code needed. Glucose meters only send when asked: use ble-glucose for those.",
 		Transports: []transport.Kind{transport.KindBLE, transport.KindSim},
 	}, func() Decoder { return &bleGATT{} })
 }
@@ -31,6 +31,7 @@ const (
 	charBatteryLevel      = 0x2A19
 	charWeightSimple      = 0x2A98
 	charHeightSimple      = 0x2A8E
+	charGlucose           = 0x2A18
 )
 
 // bleGATT decodes Bluetooth SIG health characteristics. One Frame is one GATT
@@ -61,6 +62,8 @@ func (d *bleGATT) Feed(f transport.Frame) []model.Reading {
 		return bloodPressure(c, at)
 	case charHeartRate:
 		return heartRate(c, at)
+	case charGlucose:
+		return glucoseMeasurement(c, at)
 	case charBatteryLevel:
 		if v, ok := c.u8(); ok {
 			return []model.Reading{{Metric: model.MetricBattery, Value: float64(v), Unit: "%", Quality: model.QualityOK, At: at}}

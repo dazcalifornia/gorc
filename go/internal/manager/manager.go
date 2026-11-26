@@ -129,6 +129,7 @@ func (m *Manager) Transports() []transport.Availability {
 	order := map[transport.Kind]int{
 		transport.KindSim: 0, transport.KindSerial: 1,
 		transport.KindBLE: 2, transport.KindBTClassic: 3,
+		transport.KindUSBHID: 4, transport.KindHL7: 5,
 	}
 	sort.Slice(out, func(i, j int) bool { return order[out[i].Kind] < order[out[j].Kind] })
 	return out
@@ -178,6 +179,9 @@ func (m *Manager) Open(ctx context.Context, req OpenRequest) (Session, error) {
 	}
 
 	opts := transport.OpenOptions{BaudRate: req.BaudRate, Profile: req.Profile}
+	if p, ok := decode.Lookup(req.Profile); ok {
+		opts.Line = p.Line
+	}
 	conn, err := t.Open(ctx, dev, opts)
 	if err != nil {
 		return Session{}, err
@@ -391,6 +395,23 @@ func (s *session) pump() {
 		}
 	}
 
+	// Standard control points (a glucose meter's RACP) need a write to one
+	// named characteristic, which only GATT links can do.
+	if gp, ok := s.dec.(decode.GATTPrimer); ok {
+		cw, canWrite := s.conn.(transport.CharWriter)
+		for _, w := range gp.OnOpenGATT() {
+			if !canWrite {
+				s.log("warn", fmt.Sprintf("profile wants a write to %s, but this link cannot address characteristics", w.Char), w.Data)
+				break
+			}
+			if err := cw.WriteChar(w.Char, w.Data); err != nil {
+				s.log("warn", fmt.Sprintf("write to %s failed: %v", w.Char, err), w.Data)
+				continue
+			}
+			s.log("tx", "wrote "+w.Char, w.Data)
+		}
+	}
+
 	flush := time.NewTicker(flushInterval)
 	defer flush.Stop()
 
@@ -411,6 +432,31 @@ func (s *session) pump() {
 		batch = nil
 	}
 
+	ingest := func(readings []model.Reading) {
+		s.mu.Lock()
+		for i := range readings {
+			readings[i].SessionID = s.id
+			readings[i].DeviceID = s.device.ID
+			if !readings[i].Waveform {
+				s.latest[readings[i].Metric] = readings[i]
+			}
+		}
+		s.readings += int64(len(readings))
+		s.mu.Unlock()
+
+		batch = append(batch, readings...)
+		if len(batch) >= maxBatch {
+			publish()
+		}
+	}
+
+	// Devices without a frame terminator are flushed after a quiet spell.
+	// The flush ticker doubles as the idle clock, so the gap resolves to
+	// flushInterval granularity, which is far finer than any device needs.
+	idler, _ := s.dec.(decode.IdleFlusher)
+	var lastFrame time.Time
+	idlePending := false
+
 	frames := s.conn.Frames()
 	for {
 		select {
@@ -426,6 +472,12 @@ func (s *session) pump() {
 			logBudget = rawLogRate
 
 		case <-flush.C:
+			if idlePending && time.Since(lastFrame) >= idler.IdleGap() {
+				idlePending = false
+				if rs := idler.Idle(time.Now()); len(rs) > 0 {
+					ingest(rs)
+				}
+			}
 			publish()
 			// Resend session state (counters, latest values) at a slower beat
 			// than the readings. The card only needs to look live; at the
@@ -438,6 +490,10 @@ func (s *session) pump() {
 
 		case f, ok := <-frames:
 			if !ok {
+				// A device unplugged mid-burst still gets its last frame read.
+				if idlePending {
+					ingest(idler.Idle(time.Now()))
+				}
 				publish()
 				return
 			}
@@ -446,19 +502,12 @@ func (s *session) pump() {
 			s.mu.Lock()
 			s.frames++
 			s.bytes += int64(len(f.Data))
-			for i := range readings {
-				readings[i].SessionID = s.id
-				readings[i].DeviceID = s.device.ID
-				if !readings[i].Waveform {
-					s.latest[readings[i].Metric] = readings[i]
-				}
-			}
-			s.readings += int64(len(readings))
 			s.mu.Unlock()
+			ingest(readings)
 
-			batch = append(batch, readings...)
-			if len(batch) >= maxBatch {
-				publish()
+			if idler != nil {
+				lastFrame = time.Now()
+				idlePending = true
 			}
 
 			if logBudget > 0 {

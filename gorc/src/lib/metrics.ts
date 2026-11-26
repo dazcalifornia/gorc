@@ -16,6 +16,8 @@ const META: Record<string, { label: string; digits: number; accent?: string }> =
   bp_systolic: { label: 'Systolic', digits: 0, accent: 'red' },
   bp_diastolic: { label: 'Diastolic', digits: 0, accent: 'red' },
   bp_mean: { label: 'Mean arterial', digits: 0 },
+  heart_rate: { label: 'Heart rate (ECG)', digits: 0, accent: 'green' },
+  glucose: { label: 'Glucose', digits: 1, accent: 'violet' },
   battery: { label: 'Battery', digits: 0 },
   pleth: { label: 'Plethysmogram', digits: 0 },
 }
@@ -37,12 +39,14 @@ export function formatValue(r: Reading): string {
 const ORDER = [
   'spo2',
   'pulse_rate',
+  'heart_rate',
   'perfusion_index',
   'bp_systolic',
   'bp_diastolic',
   'bp_mean',
   'temperature',
   'respiration_rate',
+  'glucose',
   'weight',
   'height',
   'bmi',

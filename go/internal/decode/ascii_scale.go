@@ -15,7 +15,7 @@ func init() {
 	register(Profile{
 		ID:          "ascii-lines",
 		Label:       "ASCII line protocol — scale / stadiometer / generic",
-		Note:        "Line-oriented serial devices: A&D, CAS, Mettler, Seca and Charder weight/height columns, plus any device that prints 'WT:70.5 HT:170 BMI:24.4'. Tolerant of vendor prefixes and whitespace.",
+		Note:        "Line-oriented serial devices: A&D, CAS, Mettler, Seca and Charder weight/height columns, plus any device that prints 'WT:70.5 HT:170 BMI:24.4'. Also the OPD kiosk scales: 'W:067.9H:180.0T:36.5' columns, Adam records, SC Stand '[ST,N,W+000062.5kg,H…cm,…]' and TANITA PW-630U 'Wk,'. Tolerant of vendor prefixes and whitespace.",
 		Transports:  []transport.Kind{transport.KindSerial, transport.KindBTClassic, transport.KindSim},
 		DefaultBaud: 9600,
 	}, func() Decoder { return &asciiLines{last: map[model.Metric]float64{}} })
@@ -40,6 +40,12 @@ var (
 	reLabelled = regexp.MustCompile(`(?i)\b(wt|weight|ht|height|bmi|fat|bf|bodyfat|lean|temp|spo2|pr|hr|pulse)\b\s*[:=]?\s*([-+]?\d+(?:\.\d+)?)\s*(kgs?|lbs?|cm|mm|in(?:ch(?:es)?)?|%|bpm|°?[cf])?`)
 	reValUnit  = regexp.MustCompile(`(?i)([-+]?\d+(?:\.\d+)?)\s*(kgs?|lbs?|cm|mm|in(?:ch(?:es)?)?|bpm|%|°\s*[cf]|deg\s*[cf]|g)\b`)
 	reStable   = regexp.MustCompile(`(?i)^\s*(st|us|ul|ol)\b`)
+	// reCompact is the OPD weight/height column ("W:067.9H:180.0T:36.5"):
+	// single-letter tags with no separator, so no word boundaries to lean on.
+	// Only tried when no long-form label matched, so "HT:170" never reads as T.
+	reCompact = regexp.MustCompile(`([WHTwht]):\s*([-+]?\d+(?:\.\d+)?)`)
+	// reTanita is the TANITA PW-630U key/value CSV ("…,Wk,62.5,…").
+	reTanita = regexp.MustCompile(`(?:^|,)\s*Wk\s*,\s*([-+]?\d+(?:\.\d+)?)\s*(?:,|}|$)`)
 )
 
 func (d *asciiLines) Feed(f transport.Frame) []model.Reading {
@@ -76,6 +82,11 @@ func (d *asciiLines) line(line string, at time.Time) []model.Reading {
 
 	var out []model.Reading
 	emit := func(metric model.Metric, value float64, unit string) {
+		// Height and BMI columns print zeros when they did not measure
+		// (an SC Stand scale sends H000000.0cm); that is "absent", not 0.
+		if value <= 0 && (metric == model.MetricHeight || metric == model.MetricBMI) {
+			return
+		}
 		// Clinical scales repeat the same line many times a second while the
 		// patient stands still; only forward movement plus a 2 s heartbeat.
 		if prev, ok := d.last[metric]; ok && prev == value && at.Sub(d.seen) < 2*time.Second {
@@ -98,6 +109,25 @@ func (d *asciiLines) line(line string, at time.Time) []model.Reading {
 				emit(metric, value, unit)
 			}
 		}
+	} else if ms := compactTags(line); len(ms) > 0 {
+		for _, m := range ms {
+			v, err := strconv.ParseFloat(m[1], 64)
+			if err != nil {
+				continue
+			}
+			switch strings.ToUpper(m[0]) {
+			case "W":
+				emit(model.MetricWeight, v, "kg")
+			case "H":
+				emit(model.MetricHeight, v, "cm")
+			case "T":
+				emit(model.MetricTemperature, v, "°C")
+			}
+		}
+	} else if m := reTanita.FindStringSubmatch(line); m != nil {
+		if v, err := strconv.ParseFloat(m[1], 64); err == nil {
+			emit(model.MetricWeight, v, "kg")
+		}
 	} else {
 		for _, m := range reValUnit.FindAllStringSubmatch(line, -1) {
 			v, err := strconv.ParseFloat(m[1], 64)
@@ -112,6 +142,24 @@ func (d *asciiLines) line(line string, at time.Time) []model.Reading {
 	}
 	if len(out) > 0 {
 		d.seen = at
+	}
+	return out
+}
+
+// compactTags returns [tag, number] pairs for W:/H:/T: tags. A tag directly
+// after a letter or '&' is part of a longer label ("PatientID:", Adam's
+// "D&T: 17/07/2026"), not a measurement. RE2 has no look-behind, so the
+// preceding byte is checked by hand.
+func compactTags(line string) [][2]string {
+	var out [][2]string
+	for _, loc := range reCompact.FindAllStringSubmatchIndex(line, -1) {
+		if loc[0] > 0 {
+			c := line[loc[0]-1]
+			if c == '&' || (c|0x20 >= 'a' && c|0x20 <= 'z') {
+				continue
+			}
+		}
+		out = append(out, [2]string{line[loc[2]:loc[3]], line[loc[4]:loc[5]]})
 	}
 	return out
 }
